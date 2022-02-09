@@ -13,6 +13,43 @@ pub struct FnSig {
 }
 
 #[derive(Debug)]
+pub struct LoopInv {
+    inv: Expr,
+    loop_span: Option<Span>,
+    body_span: Span,
+}
+
+impl LoopInv {
+    pub fn new(
+        inv: Expr,
+        loop_span: Option<Span>,
+        body_span: Span
+    ) -> Self {
+        LoopInv {
+            inv,
+            loop_span,
+            body_span,
+        }
+    }
+
+    pub fn get_span(&self) -> Span {
+        self.loop_span.unwrap_or(self.body_span)
+    }
+
+    pub fn is_cond(&self, other: Span) -> bool {
+        self.loop_span.map_or(false, |span| span.source_equal(other))
+    }
+
+    pub fn is_in_loop(&self, other: Span) -> bool {
+        self.body_span.contains(other)
+    }
+
+    pub fn inv(&self) -> &Expr {
+        &self.inv
+    }
+}
+
+#[derive(Debug)]
 pub struct Generics {
     pub params: Vec<GenericParam>,
     pub span: Span,

@@ -7,7 +7,7 @@ extern crate rustc_span;
 pub mod ast;
 pub mod lexer;
 
-use ast::FnSig;
+use ast::{Expr, FnSig};
 use lalrpop_util::lalrpop_mod;
 use lexer::{Cursor, Location, Token};
 use rustc_ast::tokenstream::TokenStream;
@@ -26,6 +26,16 @@ pub fn parse_fn_sig(tokens: TokenStream, span: Span) -> ParseResult<FnSig> {
     let parent = span.parent();
     let mk_span = |lo: Location, hi: Location| Span::new(lo.0 + offset, hi.0 + offset, ctx, parent);
     grammar::FnSigParser::new()
+        .parse(&mk_span, Cursor::new(tokens, span.lo()))
+        .map_err(|err| map_err(err, offset, ctx, parent))
+}
+
+pub fn parse_expr(tokens: TokenStream, span: Span) -> ParseResult<Expr> {
+    let offset = span.lo();
+    let ctx = span.ctxt();
+    let parent = span.parent();
+    let mk_span = |lo: Location, hi: Location| Span::new(lo.0 + offset, hi.0 + offset, ctx, parent);
+    grammar::Level1Parser::new()
         .parse(&mk_span, Cursor::new(tokens, span.lo()))
         .map_err(|err| map_err(err, offset, ctx, parent))
 }

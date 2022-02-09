@@ -31,7 +31,8 @@ impl Callbacks for LiquidCallbacks {
 }
 
 fn check_crate(tcx: TyCtxt, sess: &Session) -> Result<(), ErrorReported> {
-    let annotations = SpecCollector::collect(tcx, sess)?;
+    // todo: what to do with invs? Need to do well-formedness check and resolve them, but that's hard because we don't have variable substitutions
+    let (_invs, annotations) = SpecCollector::collect(tcx, sess)?;
 
     let wf = Wf::new(sess);
     let fn_sigs: FxHashMap<_, _> = annotations

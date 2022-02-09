@@ -1,14 +1,22 @@
 #![feature(register_tool)]
+#![feature(stmt_expr_attributes)]
 #![register_tool(lr)]
 
+//extern crate prusti_contracts;
+//use prusti_contracts::*;
+
 #[lr::ty(fn(i32{x: 0 < x}) -> i32{x: 0 < x})]
+//#[requires(n > 0)]
+//#[ensures(result > 0)]
 fn fib_loop(n: i32) -> i32 {
     let mut k = n;
     let mut i = 1;
     let mut j = 1;
     // need i > 0, and therefore j >= 0 as well
     // i > 0 and j >= 0 on entry
+    #[lr::loop_invariant(i > 0 && j >= 0)]
     while k > 2 {
+        //body_invariant!(i > 0 && j >= 0);
         // Loop invariant: i > 0 && j >= 0
         let tmp = i + j;
         // tmp > 0
