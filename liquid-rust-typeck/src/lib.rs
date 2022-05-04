@@ -14,6 +14,7 @@ extern crate rustc_span;
 mod checker;
 mod constraint_gen;
 mod dbg;
+mod extract_qualifiers;
 pub mod global_env;
 mod intern;
 pub mod lowering;
@@ -28,6 +29,7 @@ use std::{fs, io::Write, str::FromStr};
 
 use checker::Checker;
 use constraint_gen::Tag;
+use extract_qualifiers::qualifiers_from_fn_sig;
 use global_env::GlobalEnv;
 use itertools::Itertools;
 use liquid_rust_common::{
@@ -68,6 +70,11 @@ pub fn check<'tcx>(
     let bb_envs = Checker::infer(genv, body, def_id)?;
     let mut kvars = KVarStore::new();
     let pure_cx = Checker::check(genv, body, def_id, &mut kvars, bb_envs)?;
+
+    // TODO: This is just here as a test to demonstrate what qualifiers are being extracted
+    let fn_sig = genv.lookup_fn_sig(def_id);
+    let qualifiers_from_fn_sig = qualifiers_from_fn_sig(fn_sig.value(), fn_sig.params());
+    println!("{:?}", qualifiers_from_fn_sig);
 
     if CONFIG.dump_constraint {
         dump_constraint(genv.tcx, def_id, &pure_cx, ".lrc").unwrap();
