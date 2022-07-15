@@ -3,8 +3,8 @@ use itertools::Itertools;
 use rustc_const_eval::interpret::ConstValue;
 use rustc_errors::{DiagnosticId, ErrorGuaranteed};
 use rustc_middle::{
-    mir as rustc_mir, ty as rustc_ty,
-    ty::{subst::GenericArgKind, ParamEnv, TyCtxt},
+    mir as rustc_mir,
+    ty::{self as rustc_ty, subst::GenericArgKind, Instance, ParamEnv, TyCtxt},
 };
 use rustc_span::Span;
 
@@ -146,6 +146,14 @@ impl<'tcx> LoweringCtxt<'tcx> {
             } => {
                 let (func, substs) = match func.ty(&self.rustc_mir, self.tcx).kind() {
                     rustc_middle::ty::TyKind::FnDef(fn_def, substs) => {
+                        let body_id = self.rustc_mir.source.def_id();
+                        let param_env = self.tcx.param_env(body_id);
+                        let instance = Instance::resolve(self.tcx, param_env, *fn_def, substs);
+                        println!(
+                            "{body_id:?},  trait_f: {:?}, impl_f: {:?}",
+                            *fn_def,
+                            instance.unwrap().map(|i| i.def_id())
+                        );
                         (*fn_def, lower_substs(self.tcx, substs)?)
                     }
                     _ => {
@@ -155,6 +163,7 @@ impl<'tcx> LoweringCtxt<'tcx> {
                         );
                     }
                 };
+
                 let destination = self.lower_place(destination)?;
 
                 TerminatorKind::Call {
