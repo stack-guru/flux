@@ -9,7 +9,7 @@ use flux_middle::{
     rustc::mir::{Field, Place, PlaceElem},
     ty::{
         fold::{TypeFoldable, TypeFolder, TypeVisitor},
-        AdtDef, BaseTy, Loc, Path, RefKind, Sort, Substs, Ty, TyKind, VariantIdx,
+        AdtDef, BaseTy, Expr, Loc, Path, RefKind, Sort, Substs, Ty, TyKind, VariantIdx,
     },
 };
 
@@ -128,8 +128,12 @@ impl PathsTree {
         f(node, &mut self.map)
     }
 
+    fn insert_root(&mut self, loc: Loc, root: Node) {
+        self.map.insert(loc, root.to_ptr());
+    }
+
     pub fn insert(&mut self, loc: Loc, ty: Ty) {
-        self.map.insert(loc, Rc::new(RefCell::new(Node::owned(ty))));
+        self.insert_root(loc, Node::owned(ty));
     }
 
     pub fn contains_loc(&self, loc: Loc) -> bool {
@@ -334,6 +338,10 @@ enum NodeKind {
 }
 
 impl Node {
+    fn to_ptr(self) -> NodePtr {
+        Rc::new(RefCell::new(self))
+    }
+
     fn owned(ty: Ty) -> Node {
         Node::Leaf(Binding::Owned(ty))
     }
@@ -394,6 +402,45 @@ impl Node {
                 }
             }
         };
+    }
+
+    fn unfold(&mut self, genv: &GlobalEnv, rcx: &mut RefineCtxt, env: &mut PathsTree) {
+        match self {
+            Node::Leaf(Binding::Owned(ty)) => {
+                let ty = rcx.unpack(ty, false);
+                match ty.kind() {
+                    TyKind::Tuple(tys) => {
+                        let children = tys.iter().cloned().map(Node::owned).collect();
+                        *self = Node::Internal(NodeKind::Tuple, children);
+                        self.unfold(genv, rcx, env);
+                    }
+                    TyKind::Indexed(BaseTy::Adt(adt, ..), ..) if adt.is_struct() => {
+                        self.downcast(genv, rcx, VariantIdx::from_u32(0));
+                        self.unfold(genv, rcx, env);
+                    }
+                    TyKind::Indexed(BaseTy::Adt(adt, substs), _) if adt.is_box() => {
+                        let loc = rcx.define_var(&Sort::Loc);
+
+                        let boxed_ty = Node::owned(substs[0].clone()).unfolded(genv, rcx, env);
+                        env.insert_root(Loc::Free(loc), boxed_ty);
+                        *self = Node::owned(Ty::box_ptr(loc, substs[1].clone()));
+                    }
+                    TyKind::Uninit => *self = Node::Internal(NodeKind::Uninit, vec![]),
+                    _ => *self = Node::owned(ty),
+                }
+            }
+            Node::Leaf(Binding::Blocked(_)) => {}
+            Node::Internal(_, children) => {
+                for node in children {
+                    node.unfold(genv, rcx, env);
+                }
+            }
+        }
+    }
+
+    fn unfolded(mut self, genv: &GlobalEnv, rcx: &mut RefineCtxt, env: &mut PathsTree) -> Self {
+        self.unfold(genv, rcx, env);
+        self
     }
 
     fn proj(&mut self, genv: &GlobalEnv, rcx: &mut RefineCtxt, field: Field) -> &mut Node {
