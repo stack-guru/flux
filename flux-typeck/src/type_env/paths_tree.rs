@@ -9,7 +9,7 @@ use flux_middle::{
     rustc::mir::{Field, Place, PlaceElem},
     ty::{
         fold::{TypeFoldable, TypeFolder, TypeVisitor},
-        AdtDef, BaseTy, Expr, Loc, Path, RefKind, Sort, Substs, Ty, TyKind, VariantIdx,
+        AdtDef, BaseTy, Loc, Path, RefKind, Sort, Substs, Ty, TyKind, VariantIdx,
     },
 };
 
@@ -91,15 +91,28 @@ impl PathsTree {
         }
     }
 
-    pub fn update_binding(&mut self, path: &Path, binding: Binding) {
+    pub fn update(&mut self, path: &Path, binding: Binding) {
         self.get_node_mut(path, |node, _| {
             *node = Node::Leaf(binding);
         });
     }
 
-    pub fn update(&mut self, path: &Path, new_ty: Ty) {
+    pub fn update_owned(&mut self, path: &Path, new_ty: Ty) {
         self.get_node_mut(path, |node, _| {
             *node.expect_owned_mut() = new_ty;
+        });
+    }
+
+    pub fn update_and_unfold(
+        &mut self,
+        genv: &GlobalEnv,
+        rcx: &mut RefineCtxt,
+        path: &Path,
+        new_ty: Ty,
+    ) {
+        self.get_node_mut(path, |node, this| {
+            *node.expect_owned_mut() = new_ty;
+            node.unfold(genv, rcx, this);
         });
     }
 
@@ -112,11 +125,7 @@ impl PathsTree {
         });
     }
 
-    fn get_node_mut(
-        &mut self,
-        path: &Path,
-        f: impl FnOnce(&mut Node, &mut FxHashMap<Loc, NodePtr>),
-    ) {
+    fn get_node_mut(&mut self, path: &Path, f: impl FnOnce(&mut Node, &mut Self)) {
         let root = Rc::clone(self.map.get(&path.loc).unwrap());
         let mut node = &mut *root.borrow_mut();
         for f in path.projection() {
@@ -125,7 +134,7 @@ impl PathsTree {
                 Node::Internal(.., children) => node = &mut children[f.as_usize()],
             }
         }
-        f(node, &mut self.map)
+        f(node, self)
     }
 
     fn insert_root(&mut self, loc: Loc, root: Node) {
@@ -138,6 +147,13 @@ impl PathsTree {
 
     pub fn contains_loc(&self, loc: Loc) -> bool {
         self.map.contains_key(&loc)
+    }
+
+    pub fn unfold_all(&mut self, genv: &GlobalEnv, rcx: &mut RefineCtxt) {
+        let roots = self.map.values().map(Rc::clone).collect_vec();
+        for root in roots {
+            root.borrow_mut().unfold(genv, rcx, self);
+        }
     }
 
     pub fn iter(&self, mut f: impl FnMut(Path, &Binding)) {
@@ -291,12 +307,12 @@ impl PathsTree {
         let mut paths = self.paths();
         paths.sort();
         for path in paths.into_iter().rev() {
-            self.get_node_mut(&path, |node, map| {
+            self.get_node_mut(&path, |node, this| {
                 if let Node::Leaf(Binding::Owned(ty)) = node &&
                    let TyKind::BoxPtr(loc, _) = ty.kind() &&
                    !scope.contains(*loc)
                 {
-                    node.fold(map, rcx, gen, false, true);
+                    node.fold(&mut this.map, rcx, gen, false, true);
                 }
             });
         }
@@ -414,7 +430,9 @@ impl Node {
                         *self = Node::Internal(NodeKind::Tuple, children);
                         self.unfold(genv, rcx, env);
                     }
-                    TyKind::Indexed(BaseTy::Adt(adt, ..), ..) if adt.is_struct() => {
+                    TyKind::Indexed(BaseTy::Adt(adt, ..), ..)
+                        if adt.is_struct() && !adt.is_opaque() =>
+                    {
                         self.downcast(genv, rcx, VariantIdx::from_u32(0));
                         self.unfold(genv, rcx, env);
                     }

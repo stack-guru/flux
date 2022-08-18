@@ -79,8 +79,8 @@ impl TypeEnv {
         self.bindings.lookup_place(rcx, gen, place).ty()
     }
 
-    pub fn update_path(&mut self, path: &Path, new_ty: Ty) {
-        self.bindings.update(path, new_ty);
+    pub fn update_path(&mut self, genv: &GlobalEnv, rcx: &mut RefineCtxt, path: &Path, new_ty: Ty) {
+        self.bindings.update_and_unfold(genv, rcx, path, new_ty);
     }
 
     // TODO(nilehmann) find a better name for borrow in this context
@@ -105,7 +105,7 @@ impl TypeEnv {
         }
     }
 
-    pub fn write_place(
+    pub fn update_place(
         &mut self,
         rcx: &mut RefineCtxt,
         gen: &mut ConstrGen,
@@ -114,7 +114,8 @@ impl TypeEnv {
     ) {
         match self.bindings.lookup_place(rcx, gen, place) {
             LookupResult::Ptr(path, _) => {
-                self.bindings.update(&path, new_ty);
+                self.bindings
+                    .update_and_unfold(gen.genv, rcx, &path, new_ty);
             }
             LookupResult::Ref(RefKind::Mut, ty) => {
                 gen.subtyping(rcx, &new_ty, &ty);
@@ -128,7 +129,8 @@ impl TypeEnv {
     pub fn move_place(&mut self, rcx: &mut RefineCtxt, gen: &mut ConstrGen, place: &Place) -> Ty {
         match self.bindings.lookup_place(rcx, gen, place) {
             LookupResult::Ptr(path, ty) => {
-                self.bindings.update(&path, Ty::uninit());
+                self.bindings
+                    .update_and_unfold(gen.genv, rcx, &path, Ty::uninit());
                 ty
             }
             LookupResult::Ref(RefKind::Mut, _) => {
@@ -140,13 +142,8 @@ impl TypeEnv {
         }
     }
 
-    pub fn unpack(&mut self, rcx: &mut RefineCtxt) {
-        self.bindings.fmap_mut(|binding| {
-            match binding {
-                Binding::Owned(ty) => Binding::Owned(rcx.unpack(ty, false)),
-                Binding::Blocked(ty) => Binding::Blocked(ty.clone()),
-            }
-        });
+    pub fn unfold_all(&mut self, genv: &GlobalEnv, rcx: &mut RefineCtxt) {
+        self.bindings.unfold_all(genv, rcx);
     }
 
     fn infer_subst_for_bb_env(&self, bb_env: &BasicBlockEnv) -> FVarSubst {
@@ -251,8 +248,8 @@ impl TypeEnv {
                 let ty = self.bindings.get(ptr_path).expect_owned();
                 gen.subtyping(rcx, &ty, bound);
 
-                self.bindings.update_binding(ptr_path, Binding::Blocked(bound.clone()));
-                self.bindings.update(path, Ty::mk_ref(RefKind::Mut, bound.clone()));
+                self.bindings.update(ptr_path, Binding::Blocked(bound.clone()));
+                self.bindings.update_and_unfold(gen.genv, rcx, path, Ty::mk_ref(RefKind::Mut, bound.clone()));
             }
         }
 
@@ -272,7 +269,7 @@ impl PathMap for TypeEnv {
     }
 
     fn update(&mut self, path: &Path, ty: Ty) {
-        self.bindings.update(path, ty)
+        self.bindings.update_owned(path, ty)
     }
 }
 
@@ -375,26 +372,29 @@ impl TypeEnvInfer {
                         let ty2 = other.bindings.get(path2).expect_owned().with_holes();
 
                         self.bindings
-                            .update(path, Ty::mk_ref(RefKind::Mut, ty1.clone()));
+                            .update_owned(path, Ty::mk_ref(RefKind::Mut, ty1.clone()));
                         other
                             .bindings
-                            .update(path, Ty::mk_ref(RefKind::Mut, ty2.clone()));
+                            .update_owned(path, Ty::mk_ref(RefKind::Mut, ty2.clone()));
 
-                        self.bindings.update_binding(path1, Binding::Blocked(ty1));
-                        other.bindings.update_binding(path2, Binding::Blocked(ty2));
+                        self.bindings.update(path1, Binding::Blocked(ty1));
+                        other.bindings.update(path2, Binding::Blocked(ty2));
                     }
                     (TyKind::Ptr(ptr_path), TyKind::Ref(RefKind::Mut, bound)) => {
                         let bound = bound.with_holes();
                         self.bindings
-                            .update_binding(ptr_path, Binding::Blocked(bound.clone()));
-                        self.bindings.update(path, Ty::mk_ref(RefKind::Mut, bound));
+                            .update(ptr_path, Binding::Blocked(bound.clone()));
+                        self.bindings
+                            .update_owned(path, Ty::mk_ref(RefKind::Mut, bound));
                     }
                     (TyKind::Ref(RefKind::Mut, bound), TyKind::Ptr(ptr_path)) => {
                         let bound = bound.with_holes();
                         other
                             .bindings
-                            .update_binding(ptr_path, Binding::Blocked(bound.clone()));
-                        other.bindings.update(path, Ty::mk_ref(RefKind::Mut, bound));
+                            .update(ptr_path, Binding::Blocked(bound.clone()));
+                        other
+                            .bindings
+                            .update_owned(path, Ty::mk_ref(RefKind::Mut, bound));
                     }
                     _ => {}
                 }
@@ -421,7 +421,7 @@ impl TypeEnvInfer {
                 }
             };
             modified |= binding1 != binding;
-            self.bindings.update_binding(path, binding);
+            self.bindings.update(path, binding);
         }
 
         modified

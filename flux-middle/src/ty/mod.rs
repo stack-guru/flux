@@ -30,6 +30,7 @@ pub struct AdtDefData {
     def_id: DefId,
     sorts: List<Sort>,
     flags: AdtFlags,
+    is_opaque: bool,
 }
 
 #[derive(Clone, Eq, PartialEq, Hash)]
@@ -294,11 +295,16 @@ impl FnSig {
 }
 
 impl AdtDef {
-    pub fn new(rustc_def: rustc_middle::ty::AdtDef, sorts: impl Into<List<Sort>>) -> Self {
+    pub fn new(
+        rustc_def: rustc_middle::ty::AdtDef,
+        sorts: impl Into<List<Sort>>,
+        is_opaque: bool,
+    ) -> Self {
         AdtDef(Interned::new(AdtDefData {
             def_id: rustc_def.did(),
             sorts: sorts.into(),
             flags: rustc_def.flags(),
+            is_opaque,
         }))
     }
 
@@ -324,6 +330,10 @@ impl AdtDef {
 
     pub fn is_struct(&self) -> bool {
         self.flags().contains(AdtFlags::IS_STRUCT)
+    }
+
+    pub fn is_opaque(&self) -> bool {
+        self.0.is_opaque
     }
 }
 

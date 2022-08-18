@@ -104,8 +104,9 @@ impl<'a, 'genv, 'tcx> LoweringCtxt<'a, 'genv, 'tcx> {
 
         let def_id = struct_def.def_id;
         let rustc_adt = genv.tcx.adt_def(def_id);
-        let adt_def = ty::AdtDef::new(rustc_adt, sorts.clone());
-        let variant = if let core::StructKind::Transparent { fields } = &struct_def.kind {
+        if let core::StructKind::Transparent { fields } = &struct_def.kind {
+            let adt_def = ty::AdtDef::new(rustc_adt, sorts.clone(), false);
+
             let fields = iter::zip(fields, &rustc_adt.variant(VariantIdx::from_u32(0)).fields)
                 .map(|(ty, field)| {
                     match ty {
@@ -131,11 +132,10 @@ impl<'a, 'genv, 'tcx> LoweringCtxt<'a, 'genv, 'tcx> {
             let ret = ty::Ty::indexed(ty::BaseTy::adt(adt_def.clone(), substs), idxs);
 
             let variant = ty::VariantDef::new(fields, ret);
-            Some(variant)
+            (adt_def, Some(variant))
         } else {
-            None
-        };
-        (adt_def, variant)
+            (ty::AdtDef::new(rustc_adt, sorts.clone(), true), None)
+        }
     }
 
     fn lower_params(&mut self, params: &[core::Param]) -> Vec<ty::Sort> {

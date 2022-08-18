@@ -83,7 +83,7 @@ impl<'genv, 'tcx> GlobalEnv<'genv, 'tcx> {
         let sorts = self.sorts_of(def_id);
         self.adt_defs
             .get_mut()
-            .insert(def_id, ty::AdtDef::new(self.tcx.adt_def(def_id), sorts));
+            .insert(def_id, ty::AdtDef::new(self.tcx.adt_def(def_id), sorts, false));
     }
 
     pub fn lookup_fn_sig(&self, def_id: DefId) -> ty::PolySig {
@@ -102,7 +102,9 @@ impl<'genv, 'tcx> GlobalEnv<'genv, 'tcx> {
         self.adt_defs
             .borrow_mut()
             .entry(def_id)
-            .or_insert_with(|| ty::AdtDef::new(self.tcx.adt_def(def_id), self.sorts_of(def_id)))
+            .or_insert_with(|| {
+                ty::AdtDef::new(self.tcx.adt_def(def_id), self.sorts_of(def_id), false)
+            })
             .clone()
     }
 

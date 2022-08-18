@@ -179,7 +179,7 @@ impl<'a, 'tcx, P: Phase> Checker<'a, 'tcx, P> {
             .lookup_fn_sig(def_id)
             .replace_bvars_with_fresh_fvars(|sort| rcx.define_var(sort));
 
-        let env = Self::init(&mut rcx, body, &fn_sig);
+        let mut env = Self::init(&mut rcx, body, &fn_sig);
 
         let dominators = body.dominators();
         let mut ck = Checker::new(
@@ -191,6 +191,7 @@ impl<'a, 'tcx, P: Phase> Checker<'a, 'tcx, P> {
             phase,
         );
 
+        env.unfold_all(genv, &mut rcx);
         ck.check_goto(rcx, env, None, START_BLOCK)?;
         while let Some(bb) = ck.queue.pop() {
             let snapshot = ck.snapshot_at_dominator(bb);
@@ -202,7 +203,7 @@ impl<'a, 'tcx, P: Phase> Checker<'a, 'tcx, P> {
             let snapshot = ck.snapshot_at_dominator(bb);
             let mut rcx = refine_tree.refine_ctxt_at(snapshot).unwrap();
             let mut env = ck.phase.enter_basic_block(&mut rcx, bb);
-            env.unpack(&mut rcx);
+            env.unfold_all(genv, &mut rcx);
             ck.check_basic_block(rcx, env, bb)?;
         }
 
@@ -216,8 +217,7 @@ impl<'a, 'tcx, P: Phase> Checker<'a, 'tcx, P> {
             match constr {
                 ty::Constraint::Type(path, ty) => {
                     assert!(path.projection().is_empty());
-                    let ty = rcx.unpack(ty, false);
-                    env.alloc_with_ty(path.loc, ty);
+                    env.alloc_with_ty(path.loc, ty.clone());
                 }
                 ty::Constraint::Pred(e) => {
                     rcx.assume_pred(e.clone());
@@ -226,8 +226,7 @@ impl<'a, 'tcx, P: Phase> Checker<'a, 'tcx, P> {
         }
 
         for (local, ty) in body.args_iter().zip(fn_sig.args()) {
-            let ty = rcx.unpack(ty, false);
-            env.alloc_with_ty(local, ty);
+            env.alloc_with_ty(local, ty.clone());
         }
 
         for local in body.vars_and_temps_iter() {
@@ -294,12 +293,11 @@ impl<'a, 'tcx, P: Phase> Checker<'a, 'tcx, P> {
         match &stmt.kind {
             StatementKind::Assign(place, rvalue) => {
                 let ty = self.check_rvalue(rcx, env, stmt.source_info, rvalue)?;
-                let ty = rcx.unpack(&ty, false);
                 let gen =
                     &mut self
                         .phase
                         .constr_gen(self.genv, rcx, Tag::Assign(stmt.source_info.span));
-                env.write_place(rcx, gen, place, ty);
+                env.update_place(rcx, gen, place, ty);
             }
             StatementKind::SetDiscriminant { .. } => {
                 // TODO(nilehmann) double check here that the place is unfolded to
@@ -360,11 +358,10 @@ impl<'a, 'tcx, P: Phase> Checker<'a, 'tcx, P> {
                 let ret =
                     self.check_call(rcx, env, terminator.source_info, fn_sig, substs, args)?;
 
-                let ret = rcx.unpack(&ret, false);
                 let mut gen =
                     self.phase
                         .constr_gen(self.genv, rcx, Tag::Call(terminator.source_info.span));
-                env.write_place(rcx, &mut gen, destination, ret);
+                env.update_place(rcx, &mut gen, destination, ret);
 
                 if let Some(target) = target {
                     Ok(vec![(*target, Guard::None)])
@@ -387,11 +384,10 @@ impl<'a, 'tcx, P: Phase> Checker<'a, 'tcx, P> {
             }
             TerminatorKind::DropAndReplace { place, value, target, .. } => {
                 let ty = self.check_operand(rcx, env, terminator.source_info, value);
-                let ty = rcx.unpack(&ty, false);
                 let mut gen =
                     self.phase
                         .constr_gen(self.genv, rcx, Tag::Assign(terminator.source_info.span));
-                env.write_place(rcx, &mut gen, place, ty);
+                env.update_place(rcx, &mut gen, place, ty);
                 Ok(vec![(*target, Guard::None)])
             }
             TerminatorKind::FalseEdge { real_target, .. } => Ok(vec![(*real_target, Guard::None)]),
@@ -455,8 +451,7 @@ impl<'a, 'tcx, P: Phase> Checker<'a, 'tcx, P> {
         for constr in &output.ensures {
             match constr {
                 Constraint::Type(path, updated_ty) => {
-                    let updated_ty = rcx.unpack(updated_ty, false);
-                    env.update_path(path, updated_ty);
+                    env.update_path(self.genv, rcx, path, updated_ty.clone());
                 }
                 Constraint::Pred(e) => rcx.assume_pred(e.clone()),
             }
