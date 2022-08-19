@@ -1,5 +1,6 @@
 use std::{cell::RefCell, iter, rc::Rc};
 
+use bitflags::bitflags;
 use itertools::Itertools;
 
 use rustc_hash::FxHashMap;
@@ -112,7 +113,7 @@ impl PathsTree {
     ) {
         self.get_node_mut(path, |node, this| {
             *node.expect_owned_mut() = new_ty;
-            node.unfold(genv, rcx, this);
+            node.unfold(genv, rcx, this, UnfoldFlags::BOXES);
         });
     }
 
@@ -125,7 +126,11 @@ impl PathsTree {
         });
     }
 
-    fn get_node_mut(&mut self, path: &Path, f: impl FnOnce(&mut Node, &mut Self)) {
+    fn get_node_mut(
+        &mut self,
+        path: &Path,
+        f: impl FnOnce(&mut Node, &mut FxHashMap<Loc, NodePtr>),
+    ) {
         let root = Rc::clone(self.map.get(&path.loc).unwrap());
         let mut node = &mut *root.borrow_mut();
         for f in path.projection() {
@@ -134,11 +139,11 @@ impl PathsTree {
                 Node::Internal(.., children) => node = &mut children[f.as_usize()],
             }
         }
-        f(node, self)
+        f(node, &mut self.map)
     }
 
     fn insert_root(&mut self, loc: Loc, root: Node) {
-        self.map.insert(loc, root.to_ptr());
+        self.map.insert(loc, root.into_ptr());
     }
 
     pub fn insert(&mut self, loc: Loc, ty: Ty) {
@@ -152,7 +157,12 @@ impl PathsTree {
     pub fn unfold_all(&mut self, genv: &GlobalEnv, rcx: &mut RefineCtxt) {
         let roots = self.map.values().map(Rc::clone).collect_vec();
         for root in roots {
-            root.borrow_mut().unfold(genv, rcx, self);
+            root.borrow_mut().unfold(
+                genv,
+                rcx,
+                &mut self.map,
+                UnfoldFlags::BOXES | UnfoldFlags::RECURSIVE,
+            );
         }
     }
 
@@ -307,12 +317,12 @@ impl PathsTree {
         let mut paths = self.paths();
         paths.sort();
         for path in paths.into_iter().rev() {
-            self.get_node_mut(&path, |node, this| {
+            self.get_node_mut(&path, |node, map| {
                 if let Node::Leaf(Binding::Owned(ty)) = node &&
                    let TyKind::BoxPtr(loc, _) = ty.kind() &&
                    !scope.contains(*loc)
                 {
-                    node.fold(&mut this.map, rcx, gen, false, true);
+                    node.fold(map, rcx, gen, false, true);
                 }
             });
         }
@@ -354,7 +364,7 @@ enum NodeKind {
 }
 
 impl Node {
-    fn to_ptr(self) -> NodePtr {
+    fn into_ptr(self) -> NodePtr {
         Rc::new(RefCell::new(self))
     }
 
@@ -388,7 +398,7 @@ impl Node {
                 other.fold(map, rcx, gen, false, false);
             }
             (Node::Leaf(_), Node::Internal(..)) => {
-                self.split(gen.genv, rcx);
+                self.unfold(gen.genv, rcx, &mut FxHashMap::default(), UnfoldFlags::SPLIT);
                 self.join_with(gen, rcx, other);
             }
             (
@@ -420,52 +430,58 @@ impl Node {
         };
     }
 
-    fn unfold(&mut self, genv: &GlobalEnv, rcx: &mut RefineCtxt, env: &mut PathsTree) {
+    fn unfold(
+        &mut self,
+        genv: &GlobalEnv,
+        rcx: &mut RefineCtxt,
+        env: &mut FxHashMap<Loc, NodePtr>,
+        flags: UnfoldFlags,
+    ) {
         match self {
             Node::Leaf(Binding::Owned(ty)) => {
                 let ty = rcx.unpack(ty, false);
                 *self = Node::owned(ty.clone());
                 match ty.kind() {
-                    // TyKind::Tuple(tys) if !tys.is_empty() => {
-                    //     let children = tys.iter().cloned().map(Node::owned).collect();
-                    //     *self = Node::Internal(NodeKind::Tuple, children);
-                    //     self.unfold(genv, rcx, env);
-                    // }
+                    TyKind::Tuple(tys)
+                        if !tys.is_empty() && flags.contains(UnfoldFlags::TUPLES) =>
+                    {
+                        let children = tys.iter().cloned().map(Node::owned).collect();
+                        *self = Node::Internal(NodeKind::Tuple, children);
+                        self.unfold(genv, rcx, env, flags);
+                    }
                     TyKind::Indexed(BaseTy::Adt(adt, substs), _) if adt.is_box() => {
                         let loc = rcx.define_var(&Sort::Loc);
 
-                        let boxed_ty = Node::owned(substs[0].clone()).unfolded(genv, rcx, env);
-                        env.insert_root(Loc::Free(loc), boxed_ty);
+                        let mut boxed_ty = Node::owned(substs[0].clone());
+                        boxed_ty.unfold(genv, rcx, env, flags);
+                        env.insert(Loc::Free(loc), boxed_ty.into_ptr());
                         *self = Node::owned(Ty::box_ptr(loc, substs[1].clone()));
                     }
-                    // TyKind::Indexed(BaseTy::Adt(adt, ..), ..)
-                    //     if adt.is_struct() && !adt.is_opaque() =>
-                    // {
-                    //     self.downcast(genv, rcx, VariantIdx::from_u32(0));
-                    //     self.unfold(genv, rcx, env);
-                    // }
-                    // TyKind::Uninit => *self = Node::Internal(NodeKind::Uninit, vec![]),
+                    TyKind::Indexed(BaseTy::Adt(adt, ..), ..)
+                        if adt.is_struct()
+                            && !adt.is_box()
+                            && flags.contains(UnfoldFlags::STRUCTS) =>
+                    {
+                        self.downcast(genv, rcx, VariantIdx::from_u32(0));
+                        self.unfold(genv, rcx, env, flags);
+                    }
+                    TyKind::Uninit if flags.contains(UnfoldFlags::UNINIT) => {
+                        *self = Node::Internal(NodeKind::Uninit, vec![])
+                    }
                     _ => *self = Node::owned(ty),
                 }
             }
-            Node::Leaf(Binding::Blocked(_)) => {}
-            Node::Internal(_, children) => {
+            Node::Internal(_, children) if flags.contains(UnfoldFlags::RECURSIVE) => {
                 for node in children {
-                    node.unfold(genv, rcx, env);
+                    node.unfold(genv, rcx, env, flags);
                 }
             }
+            _ => {}
         }
-    }
-
-    fn unfolded(mut self, genv: &GlobalEnv, rcx: &mut RefineCtxt, env: &mut PathsTree) -> Self {
-        self.unfold(genv, rcx, env);
-        self
     }
 
     fn proj(&mut self, genv: &GlobalEnv, rcx: &mut RefineCtxt, field: Field) -> &mut Node {
-        if let Node::Leaf(_) = self {
-            self.split(genv, rcx);
-        }
+        self.unfold(genv, rcx, &mut FxHashMap::default(), UnfoldFlags::SPLIT);
         match self {
             Node::Internal(kind, children) => {
                 if let NodeKind::Uninit = kind {
@@ -500,21 +516,6 @@ impl Node {
             }
             Node::Internal(..) => panic!("invalid downcast"),
             Node::Leaf(..) => panic!("blocked"),
-        }
-    }
-
-    fn split(&mut self, genv: &GlobalEnv, rcx: &mut RefineCtxt) {
-        let ty = self.expect_owned();
-        match ty.kind() {
-            TyKind::Tuple(tys) if !tys.is_empty() => {
-                let children = tys.iter().cloned().map(Node::owned).collect();
-                *self = Node::Internal(NodeKind::Tuple, children);
-            }
-            TyKind::Indexed(BaseTy::Adt(def, ..), ..) if def.is_struct() => {
-                self.downcast(genv, rcx, VariantIdx::from_u32(0));
-            }
-            TyKind::Uninit => *self = Node::Internal(NodeKind::Uninit, vec![]),
-            _ => panic!("type cannot be split: `{ty:?}`"),
         }
     }
 
@@ -632,6 +633,17 @@ impl TypeFoldable for Binding {
             Binding::Owned(ty) => ty.visit_with(visitor),
             Binding::Blocked(ty) => ty.visit_with(visitor),
         }
+    }
+}
+
+bitflags! {
+    struct UnfoldFlags: u8 {
+        const BOXES     = 1 << 0;
+        const STRUCTS   = 1 << 1;
+        const TUPLES    = 1 << 2;
+        const UNINIT    = 1 << 3;
+        const RECURSIVE = 1 << 4;
+        const SPLIT     = Self::STRUCTS.bits | Self::TUPLES.bits | Self::UNINIT.bits;
     }
 }
 
