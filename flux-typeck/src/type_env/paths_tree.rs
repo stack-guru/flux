@@ -87,7 +87,7 @@ impl PathsTree {
         }
         match node {
             Node::Leaf(binding) => binding.clone(),
-            Node::Internal(..) => panic!("expcted `Node::Ty`"),
+            Node::Internal(..) => panic!("expected `Node::Ty`, path: `{path:?}`"),
         }
     }
 
@@ -410,7 +410,7 @@ impl Node {
                     children1.resize(max, Node::owned(Ty::uninit()));
                 }
                 if let NodeKind::Uninit = kind2 {
-                    children1.resize(max, Node::owned(Ty::uninit()));
+                    children2.resize(max, Node::owned(Ty::uninit()));
                 }
 
                 for (node1, node2) in iter::zip(children1, children2) {
@@ -424,18 +424,13 @@ impl Node {
         match self {
             Node::Leaf(Binding::Owned(ty)) => {
                 let ty = rcx.unpack(ty, false);
+                *self = Node::owned(ty.clone());
                 match ty.kind() {
-                    TyKind::Tuple(tys) => {
-                        let children = tys.iter().cloned().map(Node::owned).collect();
-                        *self = Node::Internal(NodeKind::Tuple, children);
-                        self.unfold(genv, rcx, env);
-                    }
-                    TyKind::Indexed(BaseTy::Adt(adt, ..), ..)
-                        if adt.is_struct() && !adt.is_opaque() =>
-                    {
-                        self.downcast(genv, rcx, VariantIdx::from_u32(0));
-                        self.unfold(genv, rcx, env);
-                    }
+                    // TyKind::Tuple(tys) if !tys.is_empty() => {
+                    //     let children = tys.iter().cloned().map(Node::owned).collect();
+                    //     *self = Node::Internal(NodeKind::Tuple, children);
+                    //     self.unfold(genv, rcx, env);
+                    // }
                     TyKind::Indexed(BaseTy::Adt(adt, substs), _) if adt.is_box() => {
                         let loc = rcx.define_var(&Sort::Loc);
 
@@ -443,7 +438,13 @@ impl Node {
                         env.insert_root(Loc::Free(loc), boxed_ty);
                         *self = Node::owned(Ty::box_ptr(loc, substs[1].clone()));
                     }
-                    TyKind::Uninit => *self = Node::Internal(NodeKind::Uninit, vec![]),
+                    // TyKind::Indexed(BaseTy::Adt(adt, ..), ..)
+                    //     if adt.is_struct() && !adt.is_opaque() =>
+                    // {
+                    //     self.downcast(genv, rcx, VariantIdx::from_u32(0));
+                    //     self.unfold(genv, rcx, env);
+                    // }
+                    // TyKind::Uninit => *self = Node::Internal(NodeKind::Uninit, vec![]),
                     _ => *self = Node::owned(ty),
                 }
             }
@@ -505,7 +506,7 @@ impl Node {
     fn split(&mut self, genv: &GlobalEnv, rcx: &mut RefineCtxt) {
         let ty = self.expect_owned();
         match ty.kind() {
-            TyKind::Tuple(tys) => {
+            TyKind::Tuple(tys) if !tys.is_empty() => {
                 let children = tys.iter().cloned().map(Node::owned).collect();
                 *self = Node::Internal(NodeKind::Tuple, children);
             }
