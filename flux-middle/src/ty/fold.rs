@@ -340,6 +340,7 @@ impl TypeFoldable for Expr {
         match self.kind() {
             ExprKind::FreeVar(name) => Expr::fvar(name.fold_with(folder)),
             ExprKind::BoundVar(bvar) => Expr::bvar(*bvar),
+            ExprKind::EVar(evar) => Expr::evar(evar.clone()),
             ExprKind::ConstDefId(did) => Expr::const_def_id(*did),
             ExprKind::Local(local) => Expr::local(*local),
             ExprKind::Constant(c) => Expr::constant(*c),
@@ -372,7 +373,8 @@ impl TypeFoldable for Expr {
             ExprKind::Constant(_)
             | ExprKind::BoundVar(_)
             | ExprKind::Local(_)
-            | ExprKind::ConstDefId(_) => {}
+            | ExprKind::ConstDefId(_)
+            | ExprKind::EVar(_) => {}
         }
     }
 

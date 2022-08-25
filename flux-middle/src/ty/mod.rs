@@ -1,8 +1,9 @@
+mod evars;
 pub mod fold;
 pub mod lowering;
 pub mod subst;
 
-use std::{borrow::Cow, fmt, iter, sync::OnceLock};
+use std::{borrow::Cow, iter, sync::OnceLock};
 
 use itertools::Itertools;
 
@@ -19,7 +20,7 @@ use crate::{
     rustc::mir::{Place, PlaceElem},
 };
 
-use self::{fold::TypeFoldable, subst::BVarFolder};
+use self::{evars::EVar, fold::TypeFoldable, subst::BVarFolder};
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct AdtDef(Interned<AdtDefData>);
@@ -174,6 +175,7 @@ pub struct ExprS {
 pub enum ExprKind {
     ConstDefId(DefId),
     FreeVar(Name),
+    EVar(EVar),
     BoundVar(BoundVar),
     Local(Local),
     Constant(Constant),
@@ -236,6 +238,10 @@ where
             .map(|sort| Expr::fvar(fresh(sort)))
             .collect_vec();
         self.replace_bound_vars(&exprs)
+    }
+
+    pub fn replace_bvars_with_evars(&self) -> T {
+        todo!()
     }
 
     pub fn replace_bound_vars(&self, exprs: &[Expr]) -> T {
@@ -554,6 +560,10 @@ impl Expr {
         ExprKind::BoundVar(bvar).intern()
     }
 
+    pub fn evar(evar: EVar) -> Expr {
+        ExprKind::EVar(evar).intern()
+    }
+
     pub fn local(local: Local) -> Expr {
         ExprKind::Local(local).intern()
     }
@@ -641,6 +651,7 @@ impl ExprS {
             ExprKind::FreeVar(name) => Expr::fvar(*name),
             ExprKind::ConstDefId(did) => Expr::const_def_id(*did),
             ExprKind::BoundVar(idx) => Expr::bvar(*idx),
+            ExprKind::EVar(evar) => Expr::evar(evar.clone()),
             ExprKind::Local(local) => Expr::local(*local),
             ExprKind::Constant(c) => Expr::constant(*c),
             ExprKind::BinaryOp(op, e1, e2) => {
@@ -908,6 +919,8 @@ impl_internable!(
 );
 
 mod pretty {
+    use std::fmt;
+
     use rustc_middle::ty::TyCtxt;
 
     use super::*;
@@ -1105,6 +1118,7 @@ mod pretty {
                 ExprKind::FreeVar(name) => w!("{:?}", ^name),
                 ExprKind::ConstDefId(did) => w!("{:?}", ^did),
                 ExprKind::BoundVar(bvar) => w!("{:?}", bvar),
+                ExprKind::EVar(evar) => w!("{:?}", evar),
                 ExprKind::Local(local) => w!("{:?}", ^local),
                 ExprKind::BinaryOp(op, e1, e2) => {
                     if should_parenthesize(*op, e1) {

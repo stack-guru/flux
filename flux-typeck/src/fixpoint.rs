@@ -221,24 +221,20 @@ where
         sort: &ty::Sort,
         bindings: &mut Vec<(fixpoint::Name, fixpoint::Sort, fixpoint::Expr)>,
     ) -> fixpoint::Name {
-        match arg.kind() {
-            ty::ExprKind::FreeVar(name) => {
-                *self
-                    .name_map
-                    .get(name)
-                    .unwrap_or_else(|| panic!("no entry found for key: `{name:?}`"))
-            }
-            ty::ExprKind::BoundVar(_) => panic!("unexpected free bound variable"),
-            _ => {
-                let fresh = self.fresh_name();
-                let pred = fixpoint::Expr::BinaryOp(
-                    fixpoint::BinOp::Eq,
-                    Box::new(fixpoint::Expr::Var(fresh)),
-                    Box::new(expr_to_fixpoint(arg, &self.name_map, &self.const_map)),
-                );
-                bindings.push((fresh, sort_to_fixpoint(sort), pred));
-                fresh
-            }
+        if let ty::ExprKind::FreeVar(name) = arg.kind() {
+            *self
+                .name_map
+                .get(name)
+                .unwrap_or_else(|| panic!("no entry found for key: `{name:?}`"))
+        } else {
+            let fresh = self.fresh_name();
+            let pred = fixpoint::Expr::BinaryOp(
+                fixpoint::BinOp::Eq,
+                Box::new(fixpoint::Expr::Var(fresh)),
+                Box::new(expr_to_fixpoint(arg, &self.name_map, &self.const_map)),
+            );
+            bindings.push((fresh, sort_to_fixpoint(sort), pred));
+            fresh
         }
     }
 
@@ -432,10 +428,13 @@ fn expr_to_fixpoint(expr: &ty::Expr, name_map: &NameMap, const_map: &ConstMap) -
                 })
         }
         ty::ExprKind::Tuple(exprs) => tuple_to_fixpoint(exprs, name_map, const_map),
-        ty::ExprKind::Local(_) | ty::ExprKind::BoundVar(_) | ty::ExprKind::PathProj(..) => {
+        ty::ExprKind::ConstDefId(did) => fixpoint::Expr::Var(const_map[did].name),
+        ty::ExprKind::EVar(_)
+        | ty::ExprKind::Local(_)
+        | ty::ExprKind::BoundVar(_)
+        | ty::ExprKind::PathProj(..) => {
             panic!("unexpected expr: `{expr:?}`")
         }
-        ty::ExprKind::ConstDefId(did) => fixpoint::Expr::Var(const_map[did].name),
     }
 }
 
