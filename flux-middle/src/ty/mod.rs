@@ -1,4 +1,4 @@
-mod evars;
+pub mod evars;
 pub mod fold;
 pub mod lowering;
 pub mod subst;
@@ -20,7 +20,11 @@ use crate::{
     rustc::mir::{Place, PlaceElem},
 };
 
-use self::{evars::EVar, fold::TypeFoldable, subst::BVarFolder};
+use self::{
+    evars::{EVar, EvarCtxt},
+    fold::TypeFoldable,
+    subst::BVarFolder,
+};
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct AdtDef(Interned<AdtDefData>);
@@ -124,6 +128,7 @@ pub enum Loc {
     Local(Local),
     Free(Name),
     Bound(BoundVar),
+    EVar(EVar),
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -240,8 +245,13 @@ where
         self.replace_bound_vars(&exprs)
     }
 
-    pub fn replace_bvars_with_evars(&self) -> T {
-        todo!()
+    pub fn replace_bvars_with_evars(&self, cx: &EvarCtxt) -> T {
+        let exprs = self
+            .params
+            .iter()
+            .map(|sort| Expr::evar(cx.fresh(sort)))
+            .collect_vec();
+        self.replace_bound_vars(&exprs)
     }
 
     pub fn replace_bound_vars(&self, exprs: &[Expr]) -> T {
@@ -713,6 +723,7 @@ impl ExprS {
                 ExprKind::FreeVar(name) => break Loc::Free(*name),
                 ExprKind::BoundVar(bvar) => break Loc::Bound(*bvar),
                 ExprKind::Local(local) => break Loc::Local(*local),
+                ExprKind::EVar(evar) => break Loc::EVar(*evar),
                 _ => return None,
             }
         };
@@ -799,6 +810,7 @@ impl Loc {
             Loc::Local(local) => Expr::local(*local),
             Loc::Free(name) => Expr::fvar(*name),
             Loc::Bound(bvar) => Expr::bvar(*bvar),
+            Loc::EVar(evar) => Expr::evar(evar.clone()),
         }
     }
 }
@@ -1185,6 +1197,7 @@ mod pretty {
                 Loc::Local(local) => w!("{:?}", ^local),
                 Loc::Free(name) => w!("{:?}", ^name),
                 Loc::Bound(bvar) => w!("{:?}", bvar),
+                Loc::EVar(evar) => w!("{:?}", evar),
             }
         }
     }

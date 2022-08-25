@@ -9,3 +9,10 @@ pub fn inc(x: &mut i32) -> i32 {
     *x += 1;
     0
 }
+
+#[flux::sig(fn() -> i32[2])]
+pub fn test_inc() -> i32 {
+    let mut x = 1;
+    inc(&mut x);
+    x
+}

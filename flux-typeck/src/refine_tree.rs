@@ -238,6 +238,16 @@ impl Scope {
     }
 }
 
+impl IntoIterator for Scope {
+    type Item = (Name, Sort);
+
+    type IntoIter = impl Iterator<Item = (Name, Sort)>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.bindings.into_iter_enumerated()
+    }
+}
+
 impl ConstrBuilder<'_> {
     pub fn breadcrumb(&mut self) -> ConstrBuilder {
         ConstrBuilder { _tree: self._tree, ptr: NodePtr::clone(&self.ptr) }

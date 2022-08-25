@@ -2,19 +2,22 @@ use std::iter;
 
 use itertools::{izip, Itertools};
 
+use rustc_hash::FxHashMap;
 use rustc_span::Span;
 
 use flux_middle::{
     global_env::{GlobalEnv, Variance},
     rustc::mir::BasicBlock,
     ty::{
-        fold::TypeFoldable, BaseTy, BinOp, Binders, Constraint, Constraints, Expr, Index, PolySig,
-        Pred, RefKind, Sort, Ty, TyKind,
+        evars::{EVid, EvarCtxt},
+        fold::TypeFoldable,
+        BaseTy, BinOp, Binders, Constraint, Constraints, Expr, ExprKind, Index, PolySig, Pred,
+        RefKind, Sort, Ty, TyKind,
     },
 };
 
 use crate::{
-    param_infer::{self, InferenceError},
+    param_infer::InferenceError,
     refine_tree::{ConstrBuilder, RefineCtxt},
     type_env::PathMap,
 };
@@ -74,8 +77,9 @@ impl<'a, 'tcx> ConstrGen<'a, 'tcx> {
         env: &mut Env,
         constraint: &Constraint,
     ) {
+        let mut infer_ctxt = InferCtxt::new(self.genv, rcx);
         let mut constr = rcx.check_constr();
-        check_constraint(self.genv, env, constraint, self.tag, &mut constr);
+        infer_ctxt.check_constraint(env, constraint, self.tag, &mut constr);
     }
 
     pub fn check_pred(&mut self, rcx: &mut RefineCtxt, pred: impl Into<Pred>) {
@@ -84,8 +88,9 @@ impl<'a, 'tcx> ConstrGen<'a, 'tcx> {
     }
 
     pub fn subtyping(&mut self, rcx: &mut RefineCtxt, ty1: &Ty, ty2: &Ty) {
+        let mut infer_ctxt = InferCtxt::new(self.genv, rcx);
         let mut constr = rcx.check_constr();
-        subtyping(self.genv, &mut constr, ty1, ty2, self.tag)
+        infer_ctxt.subtyping(&mut constr, ty1, ty2, self.tag)
     }
 
     pub fn check_fn_call<Env: PathMap>(
@@ -117,30 +122,31 @@ impl<'a, 'tcx> ConstrGen<'a, 'tcx> {
             .map(|arg| arg.replace_holes(&mut self.fresh_kvar))
             .collect_vec();
 
+        let mut infer_ctxt = InferCtxt::new(self.genv, rcx);
+
         // Infer refinement parameters
-        // let exprs = param_infer::infer_from_fn_call(env, &actuals, fn_sig)?;
         let fn_sig = fn_sig
             .replace_generic_types(&substs)
-            .replace_bvars_with_evars();
-        // .replace_bound_vars(&exprs);
+            .replace_bvars_with_evars(&infer_ctxt.evar_ctxt);
 
         // Check arguments
         let constr = &mut rcx.check_constr();
-        let infer_cx = InferCtxt::new(self.genv);
         for (actual, formal) in iter::zip(actuals, fn_sig.args()) {
             if let (TyKind::Ptr(path), TyKind::Ref(RefKind::Mut, bound)) =
                 (actual.kind(), formal.kind())
             {
-                infer_cx.subtyping(constr, &env.get(path), bound, self.tag);
+                infer_ctxt.subtyping(constr, &env.get(path), bound, self.tag);
                 env.update(path, bound.clone());
             } else {
-                infer_cx.subtyping(constr, &actual, formal, self.tag);
+                infer_ctxt.subtyping(constr, &actual, formal, self.tag);
             }
         }
 
+        println!("{:#?}", infer_ctxt.evar_sol);
+
         // Check preconditions
         for constraint in fn_sig.requires() {
-            infer_cx.check_constraint(env, constraint, self.tag, constr);
+            infer_ctxt.check_constraint(env, constraint, self.tag, constr);
         }
 
         Ok(CallOutput { ret: fn_sig.ret().clone(), ensures: fn_sig.ensures().clone() })
@@ -149,15 +155,18 @@ impl<'a, 'tcx> ConstrGen<'a, 'tcx> {
 
 struct InferCtxt<'a, 'tcx> {
     genv: &'a GlobalEnv<'a, 'tcx>,
+    evar_ctxt: EvarCtxt,
+    evar_sol: FxHashMap<EVid, Expr>,
 }
 
 impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
-    fn new(genv: &'a GlobalEnv<'a, 'tcx>) -> Self {
-        Self { genv }
+    fn new(genv: &'a GlobalEnv<'a, 'tcx>, rcx: &RefineCtxt) -> Self {
+        let evar_ctxt = EvarCtxt::new(rcx.scope().iter());
+        Self { genv, evar_ctxt, evar_sol: FxHashMap::default() }
     }
 
     fn check_constraint<Env: PathMap>(
-        &self,
+        &mut self,
         env: &Env,
         constraint: &Constraint,
         tag: Tag,
@@ -174,7 +183,7 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
         }
     }
 
-    fn subtyping(&self, constr: &mut ConstrBuilder, ty1: &Ty, ty2: &Ty, tag: Tag) {
+    fn subtyping(&mut self, constr: &mut ConstrBuilder, ty1: &Ty, ty2: &Ty, tag: Tag) {
         let constr = &mut constr.breadcrumb();
         match (ty1.kind(), ty2.kind()) {
             (TyKind::Exists(bty1, p1), TyKind::Exists(bty2, p2)) if p1 == p2 => {
@@ -198,10 +207,7 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
             (TyKind::Indexed(bty1, idxs1), TyKind::Indexed(bty2, idx2)) => {
                 self.bty_subtyping(constr, bty1, bty2, tag);
                 for (idx1, idx2) in iter::zip(idxs1, idx2) {
-                    if idx1.expr != idx2.expr {
-                        constr
-                            .push_head(Expr::binary_op(BinOp::Eq, idx1.clone(), idx2.clone()), tag);
-                    }
+                    self.check_eq(&idx1.expr, &idx2.expr, idx2.is_binder, tag, constr);
                 }
             }
             (TyKind::Indexed(bty1, indices), TyKind::Exists(bty2, pred)) => {
@@ -210,7 +216,8 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
                 constr.push_head(pred.replace_bound_vars(&exprs), tag);
             }
             (TyKind::Ptr(path1), TyKind::Ptr(path2)) => {
-                assert_eq!(path1, path2);
+                // assert_eq!(path1, path2);
+                self.check_eq(&path1.to_expr(), &path2.to_expr(), false, tag, constr);
             }
             (TyKind::BoxPtr(loc1, alloc1), TyKind::BoxPtr(loc2, alloc2)) => {
                 debug_assert_eq!(loc1, loc2);
@@ -249,7 +256,13 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
         }
     }
 
-    fn bty_subtyping(&self, constr: &mut ConstrBuilder, bty1: &BaseTy, bty2: &BaseTy, tag: Tag) {
+    fn bty_subtyping(
+        &mut self,
+        constr: &mut ConstrBuilder,
+        bty1: &BaseTy,
+        bty2: &BaseTy,
+        tag: Tag,
+    ) {
         match (bty1, bty2) {
             (BaseTy::Int(int_ty1), BaseTy::Int(int_ty2)) => {
                 debug_assert_eq!(int_ty1, int_ty2);
@@ -278,7 +291,7 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
     }
 
     fn variance_subtyping(
-        &self,
+        &mut self,
         constr: &mut ConstrBuilder,
         variance: Variance,
         ty1: &Ty,
@@ -293,6 +306,32 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
             }
             rustc_middle::ty::Variance::Contravariant => self.subtyping(constr, ty2, ty1, tag),
             rustc_middle::ty::Variance::Bivariant => {}
+        }
+    }
+
+    fn check_eq(
+        &mut self,
+        e1: &Expr,
+        e2: &Expr,
+        is_binder: bool,
+        tag: Tag,
+        constr: &mut ConstrBuilder,
+    ) {
+        if let ExprKind::EVar(evar) = e2.kind() {
+            use std::collections::hash_map::Entry;
+
+            match self.evar_sol.entry(evar.id) {
+                Entry::Occupied(mut entry) => {
+                    if is_binder {
+                        entry.insert(e1.clone());
+                    }
+                }
+                Entry::Vacant(entry) => {
+                    entry.insert(e1.clone());
+                }
+            }
+        } else if e1 != e2 {
+            constr.push_head(Expr::binary_op(BinOp::Eq, e1.clone(), e2.clone()), tag);
         }
     }
 }

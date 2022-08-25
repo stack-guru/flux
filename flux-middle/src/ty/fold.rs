@@ -174,11 +174,11 @@ impl TypeFoldable for Constraint {
     fn super_fold_with<F: TypeFolder>(&self, folder: &mut F) -> Self {
         match self {
             Constraint::Type(path, ty) => {
+                let path_expr = path.to_expr().fold_with(folder);
                 Constraint::Type(
-                    path.to_expr()
-                        .fold_with(folder)
-                        .to_path()
-                        .expect("folding produced an invalid path"),
+                    path_expr.to_path().unwrap_or_else(|| {
+                        panic!("folding produced an invalid path: `{path_expr:?}`")
+                    }),
                     ty.fold_with(folder),
                 )
             }
