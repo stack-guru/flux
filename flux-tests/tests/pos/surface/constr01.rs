@@ -9,11 +9,13 @@ struct Foo {
     y: i32,
 }
 
+#[flux::assume]
 #[flux::sig(fn(&Foo) -> bool[true])]
 fn test1(foo: &Foo) -> bool {
     foo.x < foo.y && 0 < foo.y
 }
 
+#[flux::assume]
 #[flux::sig(fn({&Foo[@a, @b] : b == 20}) -> i32[20])]
 fn test2(foo: &Foo) -> i32 {
     foo.y

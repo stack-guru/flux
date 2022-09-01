@@ -90,7 +90,7 @@ pub enum Ty {
     Never,
 }
 
-#[derive(PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy, Debug)]
+#[derive(PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy)]
 pub enum RefKind {
     Shr,
     Mut,
@@ -358,6 +358,15 @@ impl fmt::Debug for Sort {
             Sort::Bool => write!(f, "bool"),
             Sort::Int => write!(f, "int"),
             Sort::Loc => write!(f, "loc"),
+        }
+    }
+}
+
+impl fmt::Debug for RefKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            RefKind::Shr => write!(f, "shr"),
+            RefKind::Mut => write!(f, "mut"),
         }
     }
 }

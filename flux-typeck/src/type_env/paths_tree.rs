@@ -220,7 +220,7 @@ impl PathsTree {
                     PlaceElem::Deref => {
                         let ty = node.expect_owned();
                         match ty.kind() {
-                            TyKind::Ptr(ptr_path) => {
+                            TyKind::Ptr(_, ptr_path) => {
                                 path = ptr_path.clone();
                                 continue 'outer;
                             }
@@ -229,7 +229,7 @@ impl PathsTree {
                                 continue 'outer;
                             }
                             TyKind::Ref(mode, ty) => {
-                                return self.lookup_place_iter_ty(gen, *mode, ty, place_proj);
+                                return self.lookup_place_iter_ty(gen.genv, *mode, ty, place_proj);
                             }
                             TyKind::Indexed(BaseTy::Adt(_, substs), _) if ty.is_box() => {
                                 let fresh = rcx.define_var(&Sort::Loc);
@@ -253,7 +253,7 @@ impl PathsTree {
 
     fn lookup_place_iter_ty(
         &mut self,
-        gen: &mut ConstrGen,
+        genv: &GlobalEnv,
         mut rk: RefKind,
         ty: &Ty,
         proj: &mut impl Iterator<Item = PlaceElem>,
@@ -273,7 +273,7 @@ impl PathsTree {
                     ty = tys[field.as_usize()].clone();
                 }
                 (Field(field), TyKind::Indexed(BaseTy::Adt(adt, substs), idxs)) => {
-                    let fields = gen.genv.downcast(
+                    let fields = genv.downcast(
                         adt.def_id(),
                         VariantIdx::from_u32(0),
                         substs,
@@ -283,8 +283,7 @@ impl PathsTree {
                 }
                 (Downcast(variant_idx), TyKind::Indexed(BaseTy::Adt(adt_def, substs), idxs)) => {
                     let tys =
-                        gen.genv
-                            .downcast(adt_def.def_id(), variant_idx, substs, &idxs.to_exprs());
+                        genv.downcast(adt_def.def_id(), variant_idx, substs, &idxs.to_exprs());
                     ty = Ty::tuple(tys)
                 }
                 _ => unreachable!("{elem:?} {ty:?}"),

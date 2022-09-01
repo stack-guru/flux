@@ -210,7 +210,7 @@ impl<'a, 'tcx, P: Phase> Checker<'a, 'tcx, P> {
     fn init(rcx: &mut RefineCtxt, body: &Body, fn_sig: &FnSig) -> TypeEnv {
         let mut env = TypeEnv::new();
 
-        for constr in fn_sig.requires() {
+        fn_sig.requires().into_iter().for_each(|constr| {
             match constr {
                 ty::Constraint::Type(path, ty) => {
                     assert!(path.projection().is_empty());
@@ -221,7 +221,7 @@ impl<'a, 'tcx, P: Phase> Checker<'a, 'tcx, P> {
                     rcx.assume_pred(e.clone());
                 }
             }
-        }
+        });
 
         for (local, ty) in body.args_iter().zip(fn_sig.args()) {
             let ty = rcx.unpack(ty, false);
