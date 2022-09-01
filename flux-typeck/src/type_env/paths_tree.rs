@@ -16,25 +16,41 @@ use crate::{
     refine_tree::{RefineCtxt, Scope},
 };
 
-#[derive(Default, Eq, PartialEq)]
+type LocMap = FxHashMap<Loc, Root>;
+
+#[derive(Default, Eq, PartialEq, Clone)]
 pub struct PathsTree {
-    map: FxHashMap<Loc, NodePtr>,
+    map: LocMap,
 }
 
-impl Clone for PathsTree {
-    fn clone(&self) -> Self {
-        let map = self
-            .map
-            .iter()
-            .map(|(loc, ptr)| (*loc, Rc::new(RefCell::new(ptr.borrow().clone()))))
-            .collect();
-        Self { map }
-    }
+#[derive(Eq, PartialEq)]
+struct Root {
+    ptr: NodePtr,
+    kind: LocKind,
+}
+
+#[derive(Eq, PartialEq, Copy, Clone)]
+pub(super) enum LocKind {
+    Local,
+    Box,
+    Universal,
 }
 
 pub enum LookupResult {
     Ptr(Path, Ty),
     Ref(RefKind, Ty),
+}
+
+impl Root {
+    fn new(node: Node, kind: LocKind) -> Root {
+        Root { ptr: node.to_ptr(), kind }
+    }
+}
+
+impl Clone for Root {
+    fn clone(&self) -> Self {
+        Self { ptr: self.ptr.borrow().clone().to_ptr(), kind: self.kind }
+    }
 }
 
 impl LookupResult {
@@ -76,7 +92,7 @@ impl PathsTree {
     }
 
     pub fn get(&self, path: &Path) -> Binding {
-        let mut node = &*self.map.get(&path.loc).unwrap().borrow();
+        let mut node = &*self.map.get(&path.loc).unwrap().ptr.borrow();
         for f in path.projection() {
             match node {
                 Node::Leaf(_) => panic!("expected `Node::Adt`"),
@@ -110,12 +126,8 @@ impl PathsTree {
         });
     }
 
-    fn get_node_mut(
-        &mut self,
-        path: &Path,
-        f: impl FnOnce(&mut Node, &mut FxHashMap<Loc, NodePtr>),
-    ) {
-        let root = Rc::clone(self.map.get(&path.loc).unwrap());
+    fn get_node_mut(&mut self, path: &Path, f: impl FnOnce(&mut Node, &mut LocMap)) {
+        let root = Rc::clone(&self.map.get(&path.loc).unwrap().ptr);
         let mut node = &mut *root.borrow_mut();
         for f in path.projection() {
             match node {
@@ -126,8 +138,8 @@ impl PathsTree {
         f(node, &mut self.map)
     }
 
-    pub fn insert(&mut self, loc: Loc, ty: Ty) {
-        self.map.insert(loc, Rc::new(RefCell::new(Node::owned(ty))));
+    pub(super) fn insert(&mut self, loc: Loc, kind: LocKind, ty: Ty) {
+        self.map.insert(loc, Root::new(Node::owned(ty), kind));
     }
 
     pub fn contains_loc(&self, loc: Loc) -> bool {
@@ -151,7 +163,7 @@ impl PathsTree {
         }
         let mut proj = vec![];
         for (loc, node) in &self.map {
-            go(&node.borrow(), *loc, &mut proj, &mut f)
+            go(&node.ptr.borrow(), *loc, &mut proj, &mut f)
         }
     }
 
@@ -168,9 +180,9 @@ impl PathsTree {
     }
 
     pub fn join_with(&mut self, rcx: &mut RefineCtxt, gen: &mut ConstrGen, other: &mut PathsTree) {
-        for (loc, node1) in &self.map {
-            let node2 = &mut *other.map[loc].borrow_mut();
-            node1.borrow_mut().join_with(gen, rcx, node2);
+        for (loc, root1) in &self.map {
+            let root2 = &mut *other.map[loc].ptr.borrow_mut();
+            root1.ptr.borrow_mut().join_with(gen, rcx, root2);
         }
     }
 
@@ -187,7 +199,7 @@ impl PathsTree {
             let loc = path.loc;
             let mut path_proj = vec![];
 
-            let root = Rc::clone(&self.map[&loc]);
+            let root = Rc::clone(&self.map[&loc].ptr);
 
             let mut node = &mut *root.borrow_mut();
 
@@ -223,7 +235,7 @@ impl PathsTree {
                                 let fresh = rcx.define_var(&Sort::Loc);
                                 let loc = Loc::Free(fresh);
                                 *node = Node::owned(Ty::box_ptr(fresh, substs[1].clone()));
-                                self.insert(loc, substs[0].clone());
+                                self.insert(loc, LocKind::Box, substs[0].clone());
                                 path = Path::from(loc);
                                 continue 'outer;
                             }
@@ -304,8 +316,8 @@ impl PathsTree {
     }
 
     pub fn fmap_mut(&mut self, mut f: impl FnMut(&Binding) -> Binding) {
-        for node in self.map.values_mut() {
-            node.borrow_mut().fmap_mut(&mut f);
+        for root in self.map.values_mut() {
+            root.ptr.borrow_mut().fmap_mut(&mut f);
         }
     }
 }
@@ -332,6 +344,10 @@ enum NodeKind {
 }
 
 impl Node {
+    fn to_ptr(self) -> NodePtr {
+        Rc::new(RefCell::new(self))
+    }
+
     fn owned(ty: Ty) -> Node {
         Node::Leaf(Binding::Owned(ty))
     }
@@ -452,7 +468,7 @@ impl Node {
 
     fn fold(
         &mut self,
-        map: &mut FxHashMap<Loc, NodePtr>,
+        map: &mut LocMap,
         rcx: &mut RefineCtxt,
         gen: &mut ConstrGen,
         unblock: bool,
@@ -462,7 +478,8 @@ impl Node {
             Node::Leaf(Binding::Owned(ty)) => {
                 if let TyKind::BoxPtr(loc, alloc) = ty.kind() && close_boxes {
                     let root = map.remove(&Loc::Free(*loc)).unwrap();
-                    let boxed_ty = root.borrow_mut().fold(map, rcx, gen, unblock, close_boxes);
+                    debug_assert!(matches!(root.kind, LocKind::Box));
+                    let boxed_ty = root.ptr.borrow_mut().fold(map, rcx, gen, unblock, close_boxes);
                     let ty = gen.genv.mk_box(boxed_ty, alloc.clone());
                     *self = Node::owned(ty.clone());
                     ty

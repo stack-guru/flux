@@ -8,8 +8,10 @@ pub use flux_fixpoint::{BinOp, Constant, UnOp};
 use itertools::Itertools;
 use rustc_hir::def_id::DefId;
 use rustc_index::newtype_index;
-use rustc_middle::mir::{Field, Local};
-pub use rustc_middle::ty::{AdtFlags, FloatTy, IntTy, ParamTy, UintTy};
+pub use rustc_middle::{
+    mir::{Field, Local},
+    ty::{AdtFlags, FloatTy, IntTy, ParamTy, UintTy},
+};
 pub use rustc_target::abi::VariantIdx;
 
 use self::{fold::TypeFoldable, subst::BVarFolder};

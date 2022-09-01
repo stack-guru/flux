@@ -7,16 +7,15 @@ use flux_middle::{
     global_env::GlobalEnv,
     rustc::mir::Place,
     ty::{
-        fold::TypeFoldable, subst::FVarSubst, BaseTy, Binders, Expr, Index, Path, RefKind, Ty,
-        TyKind,
+        fold::TypeFoldable, subst::FVarSubst, BaseTy, Binders, Expr, Index, Loc, Local, Name, Path,
+        Pred, RefKind, Sort, Ty, TyKind,
     },
 };
 use itertools::{izip, Itertools};
 use rustc_hash::FxHashSet;
 use rustc_middle::ty::TyCtxt;
 
-use self::paths_tree::{Binding, LookupResult, PathsTree};
-use super::ty::{Loc, Name, Pred, Sort};
+use self::paths_tree::{Binding, LocKind, LookupResult, PathsTree};
 use crate::{
     constraint_gen::ConstrGen,
     fixpoint::KVarGen,
@@ -51,14 +50,18 @@ impl TypeEnv {
         TypeEnv { bindings: PathsTree::default() }
     }
 
-    pub fn alloc_with_ty(&mut self, loc: impl Into<Loc>, ty: Ty) {
-        let loc = loc.into();
-        self.bindings.insert(loc, ty);
+    pub fn alloc_with_ty(&mut self, local: Local, ty: Ty) {
+        let loc = local.into();
+        self.bindings.insert(loc, LocKind::Local, ty);
     }
 
-    pub fn alloc(&mut self, loc: impl Into<Loc>) {
-        let loc = loc.into();
-        self.bindings.insert(loc, Ty::uninit());
+    pub fn alloc(&mut self, local: Local) {
+        let loc = local.into();
+        self.bindings.insert(loc, LocKind::Local, Ty::uninit());
+    }
+
+    pub fn insert_universal_loc(&mut self, loc: Loc, ty: Ty) {
+        self.bindings.insert(loc, LocKind::Universal, ty);
     }
 
     pub fn into_infer(
