@@ -117,14 +117,14 @@ impl PathsTree {
         });
     }
 
-    pub fn block(&mut self, path: &Path) {
-        self.get_node_mut(path, |node, _| {
-            match node {
-                Node::Leaf(Binding::Owned(ty)) => *node = Node::Leaf(Binding::Blocked(ty.clone())),
-                _ => panic!("expected owned binding"),
-            }
-        });
-    }
+    // pub fn block(&mut self, path: &Path) {
+    //     self.get_node_mut(path, |node, _| {
+    //         match node {
+    //             Node::Leaf(Binding::Owned(ty)) => *node = Node::Leaf(Binding::Blocked(ty.clone())),
+    //             _ => panic!("expected owned binding"),
+    //         }
+    //     });
+    // }
 
     fn get_node_mut(&mut self, path: &Path, f: impl FnOnce(&mut Node, &mut LocMap)) {
         let root = Rc::clone(&self.map.get(&path.loc).unwrap().ptr);

@@ -108,7 +108,7 @@ fn infer_from_btys<M1: PathMap, M2: PathMap>(
        }
 }
 
-pub fn infer_from_exprs(exprs: &mut Exprs, e1: &Expr, e2: &Expr) {
+fn infer_from_exprs(exprs: &mut Exprs, e1: &Expr, e2: &Expr) {
     match (e1.kind(), e2.kind()) {
         (_, ExprKind::BoundVar(bvar)) if bvar.debruijn == INNERMOST => {
             if let Some(old_e) = exprs.insert(bvar.index, e1.clone()) {
