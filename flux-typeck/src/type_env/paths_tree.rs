@@ -5,7 +5,8 @@ use flux_middle::{
     rustc::mir::{Field, Place, PlaceElem},
     ty::{
         fold::{TypeFoldable, TypeFolder, TypeVisitor},
-        AdtDef, BaseTy, Loc, Path, RefKind, Sort, Substs, Ty, TyKind, VariantIdx,
+        AdtDef, BaseTy, Loc, Name, OpenPtrKind, Path, RefKind, Sort, Substs, Ty, TyKind,
+        VariantIdx,
     },
 };
 use itertools::Itertools;
@@ -29,10 +30,11 @@ struct Root {
     kind: LocKind,
 }
 
-#[derive(Eq, PartialEq, Copy, Clone)]
+#[derive(Eq, PartialEq, Clone)]
 pub(super) enum LocKind {
     Local,
-    Box,
+    Box(Ty),
+    Shr,
     Universal,
 }
 
@@ -43,13 +45,13 @@ pub enum LookupResult {
 
 impl Root {
     fn new(node: Node, kind: LocKind) -> Root {
-        Root { ptr: node.to_ptr(), kind }
+        Root { ptr: node.into_ptr(), kind }
     }
 }
 
 impl Clone for Root {
     fn clone(&self) -> Self {
-        Self { ptr: self.ptr.borrow().clone().to_ptr(), kind: self.kind }
+        Self { ptr: self.ptr.borrow().clone().into_ptr(), kind: self.kind.clone() }
     }
 }
 
@@ -224,18 +226,35 @@ impl PathsTree {
                                 path = ptr_path.clone();
                                 continue 'outer;
                             }
-                            TyKind::BoxPtr(loc, _) => {
+                            TyKind::OpenPtr(_, loc) => {
                                 path = Path::from(Loc::Free(*loc));
                                 continue 'outer;
                             }
-                            TyKind::Ref(mode, ty) => {
-                                return self.lookup_place_iter_ty(gen.genv, *mode, ty, place_proj);
+                            TyKind::Ref(RefKind::Mut, ty) => {
+                                return self.lookup_place_iter_ty(
+                                    gen.genv,
+                                    RefKind::Mut,
+                                    ty,
+                                    place_proj,
+                                );
+                            }
+                            TyKind::Ref(RefKind::Shr, ty) => {
+                                let fresh = rcx.define_var(&Sort::Loc);
+                                let loc = Loc::Free(fresh);
+                                *node = Node::owned(Ty::open_ptr(OpenPtrKind::Shr, fresh));
+                                self.insert(loc, LocKind::Shr, ty.clone());
+                                path = Path::from(loc);
+                                continue 'outer;
                             }
                             TyKind::Indexed(BaseTy::Adt(_, substs), _) if ty.is_box() => {
                                 let fresh = rcx.define_var(&Sort::Loc);
                                 let loc = Loc::Free(fresh);
-                                *node = Node::owned(Ty::box_ptr(fresh, substs[1].clone()));
-                                self.insert(loc, LocKind::Box, substs[0].clone());
+                                *node = Node::owned(Ty::open_ptr(OpenPtrKind::Box, fresh));
+                                self.insert(
+                                    loc,
+                                    LocKind::Box(substs[1].clone()),
+                                    substs[0].clone(),
+                                );
                                 path = Path::from(loc);
                                 continue 'outer;
                             }
@@ -298,7 +317,7 @@ impl PathsTree {
         for path in paths.into_iter().rev() {
             self.get_node_mut(&path, |node, map| {
                 if let Node::Leaf(Binding::Owned(ty)) = node &&
-                   let TyKind::BoxPtr(loc, _) = ty.kind() &&
+                   let TyKind::OpenPtr(_, loc) = ty.kind() &&
                    !scope.contains(*loc)
                 {
                     node.fold(map, rcx, gen, false, true);
@@ -343,7 +362,7 @@ enum NodeKind {
 }
 
 impl Node {
-    fn to_ptr(self) -> NodePtr {
+    fn into_ptr(self) -> NodePtr {
         Rc::new(RefCell::new(self))
     }
 
@@ -471,15 +490,12 @@ impl Node {
         rcx: &mut RefineCtxt,
         gen: &mut ConstrGen,
         unblock: bool,
-        close_boxes: bool,
+        close_ptrs: bool,
     ) -> Ty {
         match self {
             Node::Leaf(Binding::Owned(ty)) => {
-                if let TyKind::BoxPtr(loc, alloc) = ty.kind() && close_boxes {
-                    let root = map.remove(&Loc::Free(*loc)).unwrap();
-                    debug_assert!(matches!(root.kind, LocKind::Box));
-                    let boxed_ty = root.ptr.borrow_mut().fold(map, rcx, gen, unblock, close_boxes);
-                    let ty = gen.genv.mk_box(boxed_ty, alloc.clone());
+                if let TyKind::OpenPtr(kind, loc ) = ty.kind() && close_ptrs {
+                    let ty = close_ptr(rcx, gen, map, *kind, *loc, unblock);
                     *self = Node::owned(ty.clone());
                     ty
                 } else {
@@ -498,7 +514,7 @@ impl Node {
             Node::Internal(NodeKind::Tuple, children) => {
                 let tys = children
                     .iter_mut()
-                    .map(|node| node.fold(map, rcx, gen, unblock, close_boxes))
+                    .map(|node| node.fold(map, rcx, gen, unblock, close_ptrs))
                     .collect_vec();
                 let ty = Ty::tuple(tys);
                 *self = Node::owned(ty.clone());
@@ -508,7 +524,7 @@ impl Node {
                 let fn_sig = gen.genv.variant_sig(adt_def.def_id(), *variant_idx);
                 let actuals = children
                     .iter_mut()
-                    .map(|node| node.fold(map, rcx, gen, unblock, close_boxes))
+                    .map(|node| node.fold(map, rcx, gen, unblock, close_ptrs))
                     .collect_vec();
 
                 let partially_moved = actuals.iter().any(|ty| ty.is_uninit());
@@ -564,6 +580,23 @@ impl Binding {
             Binding::Owned(ty) => ty.is_uninit(),
             Binding::Blocked(ty) => ty.is_uninit(),
         }
+    }
+}
+
+fn close_ptr(
+    rcx: &mut RefineCtxt,
+    gen: &mut ConstrGen,
+    map: &mut LocMap,
+    kind: OpenPtrKind,
+    loc: Name,
+    unblock: bool,
+) -> Ty {
+    let root = map.remove(&Loc::Free(loc)).unwrap();
+    let pointee = root.ptr.borrow_mut().fold(map, rcx, gen, unblock, true);
+    match (kind, root.kind) {
+        (OpenPtrKind::Box, LocKind::Box(alloc)) => gen.genv.mk_box(pointee, alloc.clone()),
+        (OpenPtrKind::Shr, LocKind::Shr) => Ty::mk_ref(RefKind::Shr, pointee),
+        _ => panic!("invalid ptr"),
     }
 }
 

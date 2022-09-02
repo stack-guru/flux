@@ -128,6 +128,7 @@ impl<'a, 'tcx> ConstrGen<'a, 'tcx> {
             .map(|(actual, formal)| {
                 match (actual.kind(), formal.unconstr().kind()) {
                     (TyKind::Ptr(RefKind::Mut, path), TyKind::Ref(RefKind::Mut, bound)) => {
+                        // FIXME(nilehmann) we should block the binding for path
                         subtyping(self.genv, constr, &env.get(path), bound, self.tag);
                         env.update(path, bound.clone());
                         Ty::mk_ref(RefKind::Mut, bound.clone())
@@ -210,9 +211,9 @@ fn subtyping(genv: &GlobalEnv, constr: &mut ConstrBuilder, ty1: &Ty, ty2: &Ty, t
             debug_assert_eq!(rk1, rk2);
             debug_assert_eq!(path1, path2);
         }
-        (TyKind::BoxPtr(loc1, alloc1), TyKind::BoxPtr(loc2, alloc2)) => {
+        (TyKind::OpenPtr(kind1, loc1), TyKind::OpenPtr(kind2, loc2)) => {
+            debug_assert_eq!(kind1, kind2);
             debug_assert_eq!(loc1, loc2);
-            debug_assert_eq!(alloc1, alloc2);
         }
         (TyKind::Ref(RefKind::Mut, ty1), TyKind::Ref(RefKind::Mut, ty2)) => {
             variance_subtyping(genv, constr, Variance::Invariant, ty1, ty2, tag);

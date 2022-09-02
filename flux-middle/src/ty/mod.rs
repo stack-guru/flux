@@ -82,13 +82,14 @@ pub enum TyKind {
     Float(FloatTy),
     Uninit,
     Ptr(RefKind, Path),
-    /// A pointer to a location produced by opening a box. This mostly behaves like a [`TyKind::Ptr`],
+    /// A pointer to a location produced by opening a box or a borrow. This mostly behaves like a
+    /// [`TyKind::Ptr`],
     /// with two major differences:
     /// 1. An open box can only point to a fresh location and not an arbitrary [`Path`], so we just
     ///    store a [`Name`].
     /// 2. We keep around the allocator to be able to put the box back together (you could say that
     ///    the capability to deallocate the memory stays with the pointer).
-    BoxPtr(Name, Ty),
+    OpenPtr(OpenPtrKind, Name),
     Ref(RefKind, Ty),
     Constr(Expr, Ty),
     Param(ParamTy),
@@ -100,6 +101,12 @@ pub enum TyKind {
     /// [`Rvalue::Discriminant`]: crate::rustc::mir::Rvalue::Discriminant
     /// [`TerminatorKind::SwitchInt`]: crate::rustc::mir::TerminatorKind::SwitchInt
     Discr(Place),
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, Hash)]
+pub enum OpenPtrKind {
+    Box,
+    Shr,
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -319,8 +326,8 @@ impl Ty {
         TyKind::Ptr(rk, path.into()).intern()
     }
 
-    pub fn box_ptr(loc: Name, alloc: Ty) -> Ty {
-        TyKind::BoxPtr(loc, alloc).intern()
+    pub fn open_ptr(kind: OpenPtrKind, loc: Name) -> Ty {
+        TyKind::OpenPtr(kind, loc).intern()
     }
 
     pub fn mk_ref(mode: RefKind, ty: Ty) -> Ty {
@@ -989,7 +996,7 @@ mod pretty {
                 TyKind::Float(float_ty) => w!("{}", ^float_ty.name_str()),
                 TyKind::Uninit => w!("uninit"),
                 TyKind::Ptr(rk, loc) => w!("ptr({:?}, {:?})", ^rk, loc),
-                TyKind::BoxPtr(loc, alloc) => w!("box({:?}, {:?})", ^loc, alloc),
+                TyKind::OpenPtr(kind, loc) => w!("open({:?}, {:?})", kind, ^loc),
                 TyKind::Ref(RefKind::Mut, ty) => w!("&mut {:?}", ty),
                 TyKind::Ref(RefKind::Shr, ty) => w!("&{:?}", ty),
                 TyKind::Param(param) => w!("{}", ^param),
@@ -1233,6 +1240,16 @@ mod pretty {
         }
     }
 
+    impl Pretty for OpenPtrKind {
+        fn fmt(&self, _cx: &PPrintCx, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            define_scoped!(cx, f);
+            match self {
+                OpenPtrKind::Box => w!("box"),
+                OpenPtrKind::Shr => w!("shr"),
+            }
+        }
+    }
+
     impl_debug_with_default_cx!(
         Constraint,
         TyS => "ty",
@@ -1246,5 +1263,6 @@ mod pretty {
         BoundVar,
         FnSig,
         Index,
+        OpenPtrKind
     );
 }

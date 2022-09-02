@@ -344,7 +344,7 @@ impl TypeEnvInfer {
             | TyKind::Ref(..)
             | TyKind::Param(_)
             | TyKind::Constr(_, _)
-            | TyKind::BoxPtr(_, _) => ty.clone(),
+            | TyKind::OpenPtr(_, _) => ty.clone(),
         }
     }
 
@@ -440,10 +440,10 @@ impl TypeEnvInfer {
                 debug_assert_eq!(path1, path2);
                 Ty::ptr(*rk1, path1.clone())
             }
-            (TyKind::BoxPtr(loc1, alloc1), TyKind::BoxPtr(loc2, alloc2)) => {
+            (TyKind::OpenPtr(kind1, loc1), TyKind::OpenPtr(kind2, loc2)) => {
                 debug_assert_eq!(loc1, loc2);
-                debug_assert_eq!(alloc1, alloc2);
-                Ty::box_ptr(*loc1, alloc1.clone())
+                debug_assert_eq!(kind1, kind2);
+                Ty::open_ptr(*kind1, *loc1)
             }
             (TyKind::Indexed(bty1, idxs1), TyKind::Indexed(bty2, idxs2)) => {
                 let bty = self.join_bty(genv, bty1, bty2);
